@@ -127,14 +127,14 @@ jobs:
           thresholdAll: 0.70
 
       - name: setup java
-        if: github.actor != 'dependabot[bot]' && (success() || failure())
+        if: github.actor != 'dependabot[bot]' && !github.event.pull_request.head.repo.fork && (success() || failure())
         uses: actions/setup-java@v3
         with:
           distribution: "corretto"
           java-version: "17"
 
       - name: provision sonar-scanner
-        if: github.actor != 'dependabot[bot]' && (success() || failure())
+        if:  github.actor != 'dependabot[bot]' && !github.event.pull_request.head.repo.fork && (success() || failure())
         run: |
           export SONAR_VERSION="4.7.0.2747"
           wget -q "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${SONAR_VERSION}.zip" -O sonar-scanner.zip
@@ -143,7 +143,7 @@ jobs:
           scripts/sonar_tests.py
 
       - name: run sonar scan
-        if: github.actor != 'dependabot[bot]' && (success() || failure())
+        if: github.actor != 'dependabot[bot]' && !github.event.pull_request.head.repo.fork && (success() || failure())
         run: |
           PATH="$PWD/sonar-scanner/bin:$PATH"
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
@@ -158,7 +158,7 @@ jobs:
 
 
       - name: archive reports
-        if: github.actor != 'dependabot[bot]' && (success() || failure())
+        if: github.actor != 'dependabot[bot]' && !github.event.pull_request.head.repo.fork && (success() || failure())
         uses: actions/upload-artifact@v3
         with:
           name: reports
@@ -248,7 +248,7 @@ jobs:
 
   publish:
     runs-on: ubuntu-latest
-    if: github.repository == 'NHSDigital/nhs-context-logging' && github.actor != 'dependabot[bot]'
+    if: github.repository == 'NHSDigital/nhs-context-logging' && github.actor != 'dependabot[bot]' && !github.event.pull_request.head.repo.fork
     needs:
       - coverage
       - lint

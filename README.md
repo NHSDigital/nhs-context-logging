@@ -150,34 +150,42 @@ the library comes with a some pytest log capture fixtures ..
 
 ```python
 # conftest.py
-from nhs_context_logging.fixtures import log_capture
+# noinspection PyUnresolvedReferences
+from nhs_context_logging.fixtures import log_capture, log_capture_global
 
 # mytest.py
-from nhs_context_logging import log_action
+from nhs_context_logging import add_fields, log_action
 
-@log_action()
-def another_thing():
-    pass
+
+@log_action(log_args=["my_arg"])
+def another_thing(my_arg) -> bool:
+    return my_arg == 1
+
 
 @log_action(log_reference="MYLOGREF", log_args=["my_arg"])
-def do_a_thing(my_arg: int,  another_arg: str):
+def do_a_thing(my_arg: int, _another_arg: str):
     result = another_thing(my_arg)
+    add_fields(result=result)
     return result
 
-def test_capture_some_logs(log_capture):
 
+def test_capture_some_logs(log_capture):
     std_out, std_err = log_capture
     expected = 1232212
-    do_a_thing(expected)
+    do_a_thing(expected, 123)
 
     log = std_out[0]
     assert log["action"] == "another_thing"
     assert log["action_status"] == "succeeded"
-    
+    assert log["my_arg"] == expected
+
     log = std_out[1]
     assert log["action"] == "do_a_thing"
     assert log["my_arg"] == expected
     assert log["action_status"] == "succeeded"
+    assert log["result"] is False
+
+
 
 ```
 

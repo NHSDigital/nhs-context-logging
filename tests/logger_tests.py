@@ -9,7 +9,17 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from functools import wraps
-from typing import Any, Callable, Generator, List, Optional, Tuple, TypeVar, cast
+from typing import (
+    Any,
+    Callable,
+    Generator,
+    List,
+    Mapping,
+    Optional,
+    Tuple,
+    TypeVar,
+    cast,
+)
 from uuid import uuid4
 
 import pytest
@@ -297,6 +307,30 @@ def test_log_action_with_args(log_capture: Tuple[List[dict], List[dict]]):
     assert log["field"] == 123
 
     assert log["action"] == "test_function"
+    assert log["action_status"] == "succeeded"
+
+    assert log["_bob"] == "vic"
+
+
+def test_log_action_with_args_and_prepend_module_name(unlock_global_setup, log_capture: Tuple[List[dict], List[dict]]):
+    app_logger.setup(service_name="myApp", config_kwargs={"prepend_module_name": True})
+
+    std_out, _ = log_capture
+
+    @log_action(log_args=["_bob"], prepend_module_name=True)
+    @some_logging_decorator(some_arg=2)
+    def test_function(_bob):  # noqa: PT019
+        add_fields(field=123)
+
+    test_function("vic")
+
+    assert len(std_out) == 1
+
+    log = std_out[0]
+
+    assert log["field"] == 123
+
+    assert log["action"] == "tests.logger_tests.test_function"
     assert log["action_status"] == "succeeded"
 
     assert log["_bob"] == "vic"
@@ -618,6 +652,19 @@ def test_key_value_formatter_drop_log_info():
 
 
 def test_key_value_formatter_drop_part_log_info():
+    class MyMapping(Mapping):
+        def __init__(self, *args, **kwargs):
+            self._d = dict(*args, **kwargs)
+
+        def __iter__(self):
+            return self._d.__iter__()
+
+        def __len__(self):
+            return self._d.__len__()
+
+        def __getitem__(self, key):
+            return self._d.__getitem__(key)
+
     formatter = KeyValueFormatter(
         drop_fields=[
             "log_info_logger",
@@ -636,7 +683,17 @@ def test_key_value_formatter_drop_part_log_info():
         pathname="/test.py",
         lineno=1234,
         msg=" HI! ",
-        args=[{"internal_id": "testid", "list_type": [1, 2, 3], "nested": {"list": [4, 5, 6], "key": "secret"}}],
+        args=[
+            {
+                "internal_id": "testid",
+                "list_type": [1, 2, 3],
+                "nested": {
+                    "list": [4, 5, 6],
+                    "key": "secret",
+                    "my_mapping": MyMapping(another_key="another_secret"),
+                },
+            },
+        ],
         exc_info=None,
     )
     formatted = formatter.format(record)
@@ -651,12 +708,14 @@ def test_key_value_formatter_drop_part_log_info():
     assert " list_type=1,2,3 " in formatted
     assert " nested_list=4,5,6 " in formatted
     assert " nested_key=secret" in formatted
+    assert " nested_my_mapping_another_key=another_secret" in formatted
 
 
-def test_sync_context(log_capture: Tuple[List[dict], List[dict]]):
+@pytest.mark.parametrize("log_result", [True, False])
+def test_sync_context(log_result: bool, log_capture: Tuple[List[dict], List[dict]]):
     std_out, _ = log_capture
 
-    @log_action(log_reference="bob")
+    @log_action(log_reference="bob", log_result=log_result)
     def s_function(aaa):
         app_logger.info("smiddle")
         return aaa
@@ -666,6 +725,12 @@ def test_sync_context(log_capture: Tuple[List[dict], List[dict]]):
 
     assert std_out[0]["message"] == "smiddle"
     assert std_out[-1]["log_reference"] == "bob"
+
+    logged_results = [log["action_result"] for log in std_out if "action_result" in log]
+    if log_result:
+        assert logged_results == [res]
+    else:
+        assert logged_results == []
 
 
 def test_default_redaction(log_capture: Tuple[List[dict], List[dict]]):
@@ -719,10 +784,11 @@ def test_sync_generator(log_capture: Tuple[List[dict], List[dict]]):
     assert std_out[-1]["log_info"]["func"] == "test_sync_generator"
 
 
-async def test_async_context(log_capture: Tuple[List[dict], List[dict]]):
+@pytest.mark.parametrize("log_result", [True, False])
+async def test_async_context(log_result: bool, log_capture: Tuple[List[dict], List[dict]]):
     std_out, _ = log_capture
 
-    @log_action()
+    @log_action(log_result=log_result)
     async def a_function(aaa):
         app_logger.info("amiddle")
         return aaa
@@ -733,6 +799,12 @@ async def test_async_context(log_capture: Tuple[List[dict], List[dict]]):
     messages = [log["message"] for log in std_out if "message" in log]
     assert messages == ["amiddle"]
     assert std_out[-1]["log_info"]["func"] == "test_async_context"
+
+    logged_results = [log["action_result"] for log in std_out if "action_result" in log]
+    if log_result:
+        assert logged_results == [res]
+    else:
+        assert logged_results == []
 
 
 async def test_async_generator(log_capture: Tuple[List[dict], List[dict]]):

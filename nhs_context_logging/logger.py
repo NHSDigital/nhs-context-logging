@@ -95,6 +95,7 @@ class _Logger:
         self.service_name = "NOT SET"
         self._logger: Optional[logging.Logger] = None
         self.log_at_level = logging.getLevelName(os.environ.get("LOG_AT_LEVEL", Constants.DEFAULT_LOG_AT_LEVEL))
+        self.config = LogConfig()
         self._is_setup = False
 
     def setup_file_log(
@@ -383,7 +384,7 @@ def get_method_name(func, *args, **kwargs):
     else:
         method_name = func.__name__
 
-    if hasattr(app_logger, "config") and app_logger.config.prepend_module_name:
+    if app_logger.config.prepend_module_name:
         method_name = f"{func.__module__}.{method_name}"
     return method_name
 

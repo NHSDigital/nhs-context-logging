@@ -95,6 +95,7 @@ class _Logger:
         self.service_name = "NOT SET"
         self._logger: Optional[logging.Logger] = None
         self.log_at_level = logging.getLevelName(os.environ.get("LOG_AT_LEVEL", Constants.DEFAULT_LOG_AT_LEVEL))
+        self.config = LogConfig()
         self._is_setup = False
 
     def setup_file_log(

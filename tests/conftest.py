@@ -1,7 +1,9 @@
 import pytest
 
 from nhs_context_logging import app_logger, logging_context
-from nhs_context_logging.fixtures import log_capture, log_capture_global  # noqa: F401
+
+# noinspection PyUnresolvedReferences
+from nhs_context_logging.fixtures import *  # noqa: F403
 from nhs_context_logging.logger import uuid4_hex_string
 
 

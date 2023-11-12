@@ -6,11 +6,11 @@ import pytest
 from nhs_context_logging import app_logger
 from nhs_context_logging.handlers import capturing_log_handlers
 
-__all__ = ["log_capture_global", "log_capture"]
+__all__ = ["log_capture_global_fixture", "log_capture_fixture"]
 
 
-@pytest.fixture(scope="session")
-def log_capture_global() -> Iterable[Tuple[List[dict], List[dict]]]:
+@pytest.fixture(scope="session", name="log_capture_global")
+def log_capture_global_fixture() -> Iterable[Tuple[List[dict], List[dict]]]:
     std_out: List[Dict[str, Any]] = []
     std_err: List[Dict[str, Any]] = []
 
@@ -27,8 +27,8 @@ def log_capture_global() -> Iterable[Tuple[List[dict], List[dict]]]:
         logging.root.removeHandler(handler)
 
 
-@pytest.fixture()
-def log_capture(log_capture_global) -> Iterable[Tuple[List[dict], List[dict]]]:
+@pytest.fixture(name="log_capture")
+def log_capture_fixture(log_capture_global) -> Iterable[Tuple[List[dict], List[dict]]]:
     std_out, std_err = log_capture_global
 
     std_out.clear()

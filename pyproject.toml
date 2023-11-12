@@ -14,6 +14,9 @@ readme = "README.md"
 # core dependencies
 python = ">=3.8.1"
 
+[tool.poetry.extras]
+pytest = ["pytest", "petname"]
+
 [tool.setuptools.package-data]
 "nhs_context_logging" = ["py.typed"]
 

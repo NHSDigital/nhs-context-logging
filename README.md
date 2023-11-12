@@ -151,7 +151,7 @@ the library comes with a some pytest log capture fixtures ..
 ```python
 # conftest.py
 # noinspection PyUnresolvedReferences
-from nhs_context_logging.fixtures import log_capture, log_capture_global
+from nhs_context_logging.fixtures import *   # noqa: F403
 
 # mytest.py
 from nhs_context_logging import add_fields, log_action

@@ -402,6 +402,8 @@ class TemporaryGlobalFieldsContextManager(threading.local):
     def __init__(self, add_to_context: bool = False, **fields):
         self._add_to_context = add_to_context
         self._globals = _Globals(fields)
+        internal_id = fields.get("internal_id")
+        self._global_internal_id = _InternalIdHolder(internal_id=internal_id) if internal_id else None
 
     def _recreate_cm(self):
         return self
@@ -447,10 +449,19 @@ class TemporaryGlobalFieldsContextManager(threading.local):
             context = logging_context.current()
             if context:
                 context.add_fields(**self._globals.globals)
+        if self._global_internal_id:
+            logging_context.push(self._global_internal_id)
         logging_context.add_temporary_globals(self._globals)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        if self._global_internal_id:
+            try:
+                popped = logging_context.pop(self._global_internal_id)
+                if popped != self._global_internal_id:
+                    raise MismatchedActionError("Mismatch action popped from stack!")
+            except ActionNotInStack:
+                pass
         logging_context.pop_temporary_globals(self._globals)
 
     async def __aenter__(self):
@@ -706,6 +717,26 @@ class LogActionContextManager(threading.local):
         message[Constants.ACTION_STATUS] = Constants.STATUS_ERROR
 
 
+class _InternalIdHolder(threading.local):
+    def __init__(self, internal_id: str):
+        self.internal_id = internal_id
+
+    @property
+    def action_type(self):
+        return self.fields.get(Constants.ACTION_FIELD, "not_set")
+
+    @property
+    def log_level(self):
+        return -1
+
+    @property
+    def log_reference(self):
+        return None
+
+    def add_fields(self, **_fields):
+        return
+
+
 class _Globals:
     __slots__ = ["globals"]
 
@@ -920,10 +951,10 @@ class _LoggingContext(threading.local):
             log_level = typing.cast(int, app_logger.log_at_level)
         return log_level
 
-    def push(self, action: LogActionContextManager):
+    def push(self, action: Union[LogActionContextManager, _InternalIdHolder]):
         self.storage.stack.append(action)
 
-    def pop(self, item: LogActionContextManager) -> LogActionContextManager:
+    def pop(self, item: Union[LogActionContextManager, _InternalIdHolder]) -> LogActionContextManager:
         stack = self.storage.stack
 
         for i in range(len(stack), 0, -1):

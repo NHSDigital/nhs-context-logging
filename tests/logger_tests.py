@@ -1488,3 +1488,47 @@ def test_decimal_structured_formatter():
 
     assert formatted["dec1"] == Decimal("24.534")
     assert formatted["sub"]["dec2"] == Decimal("523.109")
+
+
+def test_set_internal_id_from_temporary_global_fields(log_capture: Tuple[List[dict], List[dict]]):
+    _, std_err = log_capture
+
+    @log_action(log_reference="BANANA", log_reference_on_error=None)
+    def test_function():
+        add_fields(field=123)
+        raise ValueError("eek")
+
+    with pytest.raises(ValueError, match="eek"), temporary_global_fields(internal_id="RASPBERRY"):
+        test_function()
+
+    assert len(std_err) == 1
+
+    log = std_err[0]
+
+    assert log["field"] == 123
+
+    assert log["action"] == "test_function"
+    assert log["action_status"] == "failed"
+    assert log["internal_id"] == "RASPBERRY"
+
+
+async def test_async_set_internal_id_from_temporary_global_fields(log_capture: Tuple[List[dict], List[dict]]):
+    _, std_err = log_capture
+
+    @log_action(log_reference="BANANA", log_reference_on_error=None)
+    async def test_function():
+        add_fields(field=123)
+        raise ValueError("eek")
+
+    with pytest.raises(ValueError, match="eek"), temporary_global_fields(internal_id="RASPBERRY"):
+        await test_function()
+
+    assert len(std_err) == 1
+
+    log = std_err[0]
+
+    assert log["field"] == 123
+
+    assert log["action"] == "test_function"
+    assert log["action_status"] == "failed"
+    assert log["internal_id"] == "RASPBERRY"

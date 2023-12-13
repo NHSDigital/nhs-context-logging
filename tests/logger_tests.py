@@ -494,7 +494,7 @@ async def test_async_logging_context_concurrent_tasks(log_capture: Tuple[List[di
     assert_single_internal_id(log_capture)
 
 
-def test_concurrent_logging_context(log_capture: Tuple[List[dict], List[dict]]):
+def test_concurrent_with_global_logging_context(log_capture: Tuple[List[dict], List[dict]]):
     global_id = uuid4().hex
 
     @log_action()
@@ -504,7 +504,8 @@ def test_concurrent_logging_context(log_capture: Tuple[List[dict], List[dict]]):
         print(f"ending task {task_id}")
         return task_id
 
-    with temporary_global_fields(internal_id=uuid4().hex, global_id=global_id):
+    internal_id = uuid4().hex
+    with temporary_global_fields(internal_id=internal_id, global_id=global_id):
         concurrent_tasks(
             [
                 ("task1", my_task, ["task1", 1]),
@@ -520,6 +521,71 @@ def test_concurrent_logging_context(log_capture: Tuple[List[dict], List[dict]]):
     assert len(std_out) == 4
 
     assert_single_internal_id(log_capture)
+
+    assert std_out[0]["internal_id"] == internal_id
+
+    my_io_global_id = {line["global_id"] for line in std_out if line["action"] == "my_task"}
+    assert len(my_io_global_id) == 1
+    assert my_io_global_id == {global_id}
+
+
+def test_concurrent_with_logging_context(log_capture: Tuple[List[dict], List[dict]]):
+    @log_action()
+    def my_task(task_id: str, wait: float):
+        print(f"starting task {task_id}")
+        time.sleep(wait)
+        print(f"ending task {task_id}")
+        return task_id
+
+    internal_id = uuid4().hex
+
+    with log_action(internal_id=internal_id):
+        concurrent_tasks(
+            [
+                ("task1", my_task, ["task1", 1]),
+                ("task2", my_task, ["task2", 0.5]),
+                ("task3", my_task, ["task3", 0.25]),
+                ("task4", my_task, ["task4", 0.33]),
+            ]
+        )
+
+    std_out, std_err = log_capture
+
+    assert len(std_err) == 0
+    assert len(std_out) == 5
+
+    assert_single_internal_id(log_capture)
+
+    assert std_out[0]["internal_id"] == internal_id
+
+
+def test_concurrent_logging_with_no_context(log_capture: Tuple[List[dict], List[dict]]):
+    global_id = uuid4().hex
+
+    @log_action()
+    def my_task(task_id: str, wait: float):
+        print(f"starting task {task_id}")
+        time.sleep(wait)
+        print(f"ending task {task_id}")
+        return task_id
+
+    with temporary_global_fields(global_id=global_id):
+        concurrent_tasks(
+            [
+                ("task1", my_task, ["task1", 1]),
+                ("task2", my_task, ["task2", 0.5]),
+                ("task3", my_task, ["task3", 0.25]),
+                ("task4", my_task, ["task4", 0.33]),
+            ]
+        )
+
+    std_out, std_err = log_capture
+
+    assert len(std_err) == 0
+    assert len(std_out) == 4
+
+    internal_ids = {line["internal_id"] for line in (log_capture[0] + log_capture[1])}
+    assert len(internal_ids) == 4, internal_ids
 
     my_io_global_id = {line["global_id"] for line in std_out if line["action"] == "my_task"}
     assert len(my_io_global_id) == 1

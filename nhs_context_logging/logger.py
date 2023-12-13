@@ -1043,20 +1043,15 @@ class LoggingContextWorkItem(thread._WorkItem):  # type: ignore[attr-defined]
     def __init__(self, future, fn, args, kwargs):
         super().__init__(future, fn, args, kwargs)
         self.global_fields = logging_context.current_global_fields
-        internal_id = logging_context.current_internal_id()
+
+        internal_id = self.global_fields.get(Constants.LOG_CORRELATION_ID_FIELD, logging_context.current_internal_id())
         if internal_id:
             self.global_fields[Constants.LOG_CORRELATION_ID_FIELD] = internal_id
 
     def run(self):
         temp_globals = _Globals(self.global_fields)
-
-        action = LogActionContextManager()
-
         logging_context.add_temporary_globals(temp_globals)
-        logging_context.push(action)
-
         try:
             super().run()
         finally:
-            logging_context.pop(action)
             logging_context.pop_temporary_globals(temp_globals)

@@ -26,7 +26,6 @@ import pytest
 
 from nhs_context_logging import (
     INFO,
-    TemporaryGlobalFieldsContextManager,
     add_fields,
     app_logger,
     log_action,
@@ -495,7 +494,72 @@ async def test_async_logging_context_concurrent_tasks(log_capture: Tuple[List[di
     assert_single_internal_id(log_capture)
 
 
-def test_concurrent_logging_context(log_capture: Tuple[List[dict], List[dict]]):
+def test_concurrent_with_global_logging_context(log_capture: Tuple[List[dict], List[dict]]):
+    global_id = uuid4().hex
+
+    @log_action()
+    def my_task(task_id: str, wait: float):
+        print(f"starting task {task_id}")
+        time.sleep(wait)
+        print(f"ending task {task_id}")
+        return task_id
+
+    internal_id = uuid4().hex
+    with temporary_global_fields(internal_id=internal_id, global_id=global_id):
+        concurrent_tasks(
+            [
+                ("task1", my_task, ["task1", 1]),
+                ("task2", my_task, ["task2", 0.5]),
+                ("task3", my_task, ["task3", 0.25]),
+                ("task4", my_task, ["task4", 0.33]),
+            ]
+        )
+
+    std_out, std_err = log_capture
+
+    assert len(std_err) == 0
+    assert len(std_out) == 4
+
+    assert_single_internal_id(log_capture)
+
+    assert std_out[0]["internal_id"] == internal_id
+
+    my_io_global_id = {line["global_id"] for line in std_out if line["action"] == "my_task"}
+    assert len(my_io_global_id) == 1
+    assert my_io_global_id == {global_id}
+
+
+def test_concurrent_with_logging_context(log_capture: Tuple[List[dict], List[dict]]):
+    @log_action()
+    def my_task(task_id: str, wait: float):
+        print(f"starting task {task_id}")
+        time.sleep(wait)
+        print(f"ending task {task_id}")
+        return task_id
+
+    internal_id = uuid4().hex
+
+    with log_action(internal_id=internal_id):
+        concurrent_tasks(
+            [
+                ("task1", my_task, ["task1", 1]),
+                ("task2", my_task, ["task2", 0.5]),
+                ("task3", my_task, ["task3", 0.25]),
+                ("task4", my_task, ["task4", 0.33]),
+            ]
+        )
+
+    std_out, std_err = log_capture
+
+    assert len(std_err) == 0
+    assert len(std_out) == 5
+
+    assert_single_internal_id(log_capture)
+
+    assert std_out[0]["internal_id"] == internal_id
+
+
+def test_concurrent_logging_with_no_context(log_capture: Tuple[List[dict], List[dict]]):
     global_id = uuid4().hex
 
     @log_action()
@@ -520,7 +584,8 @@ def test_concurrent_logging_context(log_capture: Tuple[List[dict], List[dict]]):
     assert len(std_err) == 0
     assert len(std_out) == 4
 
-    assert_single_internal_id(log_capture)
+    internal_ids = {line["internal_id"] for line in (log_capture[0] + log_capture[1])}
+    assert len(internal_ids) == 4, internal_ids
 
     my_io_global_id = {line["global_id"] for line in std_out if line["action"] == "my_task"}
     assert len(my_io_global_id) == 1
@@ -534,9 +599,9 @@ def test_generator(log_capture: Tuple[List[dict], List[dict]]):
         return action.internal_id
 
     @log_action()
-    def generator_action(count: int) -> Generator[str, None, None]:
+    def generator_action(count: int) -> Generator[Optional[str], None, None]:
         for _ in range(count):
-            yield logging_context.current().internal_id, inner_action()
+            yield logging_context.current_internal_id(), inner_action()
 
     @log_action()
     def outer_action():
@@ -1262,32 +1327,6 @@ def test_expected_errors_complex_exception(log_capture: Tuple[List[dict], List[d
     assert isinstance(log["error_info"]["line_no"], int)
 
 
-async def test_temporary_global_fields_context_manager_call():
-    def gen():
-        yield from range(10)
-
-    async def async_gen():
-        for i in range(10):
-            yield i
-
-    async def coro(arg1):
-        return arg1
-
-    tgfcm = TemporaryGlobalFieldsContextManager()
-
-    func = tgfcm(gen)
-    result = list(func())
-    assert result == list(range(10))
-
-    func = tgfcm(async_gen)
-    result = [i async for i in func()]
-    assert result == list(range(10))
-
-    func = tgfcm(coro)
-    result = await func("vic")
-    assert result == "vic"
-
-
 async def test_async_sync_concurrent_tasks_transfer(log_capture: Tuple[List[dict], List[dict]]):
     logging_context.setup_async()
 
@@ -1513,22 +1552,27 @@ def test_set_internal_id_from_temporary_global_fields(log_capture: Tuple[List[di
 
 
 async def test_async_set_internal_id_from_temporary_global_fields(log_capture: Tuple[List[dict], List[dict]]):
-    _, std_err = log_capture
+    std_out, _ = log_capture
 
     @log_action(log_reference="BANANA", log_reference_on_error=None)
     async def test_function():
         add_fields(field=123)
-        raise ValueError("eek")
+        return "test"
 
-    with pytest.raises(ValueError, match="eek"), temporary_global_fields(internal_id="RASPBERRY"):
-        await test_function()
+    async with log_action(action="outer"), temporary_global_fields(internal_id="RASPBERRY"):
+        result = await test_function()
+        add_fields(result=result)
 
-    assert len(std_err) == 1
+    assert len(std_out) == 2
 
-    log = std_err[0]
+    log = std_out[0]
 
     assert log["field"] == 123
 
     assert log["action"] == "test_function"
-    assert log["action_status"] == "failed"
+    assert log["action_status"] == "succeeded"
     assert log["internal_id"] == "RASPBERRY"
+
+    log = std_out[1]
+    assert log["action"] == "outer"
+    assert log["result"] == "test"

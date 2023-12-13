@@ -402,66 +402,16 @@ class TemporaryGlobalFieldsContextManager(threading.local):
     def __init__(self, add_to_context: bool = False, **fields):
         self._add_to_context = add_to_context
         self._globals = _Globals(fields)
-        internal_id = fields.get("internal_id")
-        self._global_internal_id = _InternalIdHolder(internal_id=internal_id) if internal_id else None
-
-    def _recreate_cm(self):
-        return self
-
-    def __call__(self, func):
-        if inspect.isasyncgenfunction(func):
-
-            @wraps(func)
-            async def _async_gen_inner(*args, **kwargs):
-                async with self._recreate_cm():
-                    async for res in func(*args, **kwargs):
-                        yield res
-
-            return _async_gen_inner
-
-        if inspect.isgeneratorfunction(func):
-
-            @wraps(func)
-            def _sync_gen_inner(*args, **kwargs):
-                with self._recreate_cm():
-                    yield from func(*args, **kwargs)
-
-            return _sync_gen_inner
-
-        if inspect.iscoroutinefunction(func):
-
-            @wraps(func)
-            async def _async_inner(*args, **kwargs):
-                async with self._recreate_cm():
-                    return await func(*args, **kwargs)
-
-            return _async_inner
-
-        @wraps(func)
-        def _sync_inner(*args, **kwargs):
-            with self._recreate_cm():
-                return func(*args, **kwargs)
-
-        return _sync_inner
 
     def __enter__(self):
         if self._add_to_context:
             context = logging_context.current()
             if context:
                 context.add_fields(**self._globals.globals)
-        if self._global_internal_id:
-            logging_context.push(self._global_internal_id)
         logging_context.add_temporary_globals(self._globals)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if self._global_internal_id:
-            try:
-                popped = logging_context.pop(self._global_internal_id)
-                if popped != self._global_internal_id:
-                    raise MismatchedActionError("Mismatch action popped from stack!")
-            except ActionNotInStack:
-                pass
         logging_context.pop_temporary_globals(self._globals)
 
     async def __aenter__(self):
@@ -490,17 +440,19 @@ class LogActionContextManager(threading.local):
     ):
         self.log_args = log_args
         self.log_result = log_result
-
-        self.fields: Dict[str, Any] = {"log_reference": log_reference}
+        self.action_fields: Dict[str, Any] = {"log_reference": log_reference}
         if log_level:
-            self.fields[Constants.LOG_LEVEL] = log_level
+            self.action_fields[Constants.LOG_LEVEL] = log_level
         if action:
-            self.fields[Constants.ACTION_FIELD] = action
+            self.action_fields[Constants.ACTION_FIELD] = action
+        if fields:
+            self.action_fields.update(fields)
+
+        self.fields: Dict[str, Any] = {}  # this for the fields used within the action (initialised in start_action)
         self.forced_log_level = forced_log_level
         self.start_time: Optional[float] = None
         self.end_time: Optional[float] = None
         self._caller_info = caller_info
-        self.add_fields(**(fields or {}))
 
     def _recreate_cm(self, func, wrapper, *args, **inner_kwargs):
         caller_inf, args_to_log = self._get_log_args(func, wrapper, self._caller_info, *args, **inner_kwargs)
@@ -509,7 +461,8 @@ class LogActionContextManager(threading.local):
             log_result=self.log_result,
             caller_info=caller_inf,
         )
-        new_context.add_fields(**args_to_log)
+        if args_to_log:
+            new_context.action_fields.update(args_to_log)
 
         return new_context
 
@@ -520,12 +473,12 @@ class LogActionContextManager(threading.local):
 
         args_to_log = get_args(self.log_args, func, *args, **inner_kwargs) if self.log_args else {}
 
-        self.fields[Constants.ACTION_FIELD] = self.fields.get(
+        self.action_fields[Constants.ACTION_FIELD] = self.action_fields.get(
             Constants.ACTION_FIELD, get_method_name(func, *args, **inner_kwargs)
         )
 
-        if self.fields:
-            args_to_log.update(self.fields)
+        if self.action_fields:
+            args_to_log.update(self.action_fields)
 
         return caller_inf, args_to_log
 
@@ -615,7 +568,11 @@ class LogActionContextManager(threading.local):
 
     def _start_action(self, caller: Callable):
         self._caller_info = self._caller_info or find_caller_info(caller)
-
+        self.fields = logging_context.current_global_fields  # this is a copy
+        global_expected_errs = self.fields.get(Constants.EXPECTED_ERRORS, ())
+        self.fields.update(self.action_fields)
+        action_expected_errs = self.action_fields.get(Constants.EXPECTED_ERRORS, ())
+        self.fields[Constants.EXPECTED_ERRORS] = global_expected_errs + action_expected_errs
         requested_log_level = self.fields.get(Constants.LOG_AT_LEVEL)
         if requested_log_level is not None:
             del self.fields[Constants.LOG_AT_LEVEL]
@@ -623,9 +580,8 @@ class LogActionContextManager(threading.local):
 
         self.fields[Constants.LOG_LEVEL] = self.fields.get(Constants.LOG_LEVEL, Constants.DEFAULT_LOG_LEVEL)
 
-        if Constants.LOG_CORRELATION_ID_FIELD not in self.fields:
-            last_task = logging_context.current()
-            internal_id = last_task.internal_id if last_task else LogActionContextManager.internal_id_factory()
+        if not self.fields.get(Constants.LOG_CORRELATION_ID_FIELD):
+            internal_id = logging_context.current_internal_id() or LogActionContextManager.internal_id_factory()
             self.fields[Constants.LOG_CORRELATION_ID_FIELD] = internal_id
 
         self.start_time = time()
@@ -697,12 +653,10 @@ class LogActionContextManager(threading.local):
                 message[Constants.LOG_REFERENCE_FIELD] = new_log_reference
 
         # check if this is an 'expected error'
-        global_norm_ex_types = logging_context.current_global_fields.get(Constants.EXPECTED_ERRORS, ())
-        action_norm_ex_types = message.pop(Constants.EXPECTED_ERRORS, ())
+        expected_error_types = message.pop(Constants.EXPECTED_ERRORS, ())
         expected_error_levels = message.pop(Constants.ERROR_LEVELS, None)
-        norm_ex_types = action_norm_ex_types + global_norm_ex_types
 
-        if not norm_ex_types or not issubclass(exc_type, norm_ex_types):
+        if not expected_error_types or not issubclass(exc_type, expected_error_types):
             message[Constants.INCLUDE_TRACEBACK] = True
             message[Constants.ACTION_STATUS] = Constants.STATUS_FAILED
             message[Constants.LOG_LEVEL] = logging.ERROR
@@ -715,26 +669,6 @@ class LogActionContextManager(threading.local):
 
         message[Constants.LOG_LEVEL] = max(current_level, error_level)
         message[Constants.ACTION_STATUS] = Constants.STATUS_ERROR
-
-
-class _InternalIdHolder(threading.local):
-    def __init__(self, internal_id: str):
-        self.internal_id = internal_id
-
-    @property
-    def action_type(self):
-        return self.fields.get(Constants.ACTION_FIELD, "not_set")
-
-    @property
-    def log_level(self):
-        return -1
-
-    @property
-    def log_reference(self):
-        return None
-
-    def add_fields(self, **_fields):
-        return
 
 
 class _Globals:
@@ -951,10 +885,10 @@ class _LoggingContext(threading.local):
             log_level = typing.cast(int, app_logger.log_at_level)
         return log_level
 
-    def push(self, action: Union[LogActionContextManager, _InternalIdHolder]):
+    def push(self, action: LogActionContextManager):
         self.storage.stack.append(action)
 
-    def pop(self, item: Union[LogActionContextManager, _InternalIdHolder]) -> LogActionContextManager:
+    def pop(self, item: LogActionContextManager) -> LogActionContextManager:
         stack = self.storage.stack
 
         for i in range(len(stack), 0, -1):
@@ -966,20 +900,18 @@ class _LoggingContext(threading.local):
     def current(self) -> Optional[LogActionContextManager]:
         return typing.cast(Optional[LogActionContextManager], self.storage.current_context)
 
-    def current_internal_id(self) -> str:
+    def current_internal_id(self) -> Optional[str]:
         current_action = self.current()
         if not current_action:
-            raise ValueError("requested current internal id with no current context")
-
-        return current_action.internal_id
+            return None
+        return current_action.fields.get(Constants.LOG_CORRELATION_ID_FIELD)
 
     def get_context_fields(self):
         fields = {}
         fields.update(self.current_global_fields)
-        current_context = self.current()
-        if not current_context:
-            return fields
-        fields[Constants.LOG_CORRELATION_ID_FIELD] = current_context.internal_id
+        internal_id = self.current_internal_id()
+        if internal_id:
+            fields[Constants.LOG_CORRELATION_ID_FIELD] = internal_id
         return fields
 
     @staticmethod
@@ -1018,7 +950,6 @@ class _LoggingContext(threading.local):
             return
 
         final_message = {}
-        final_message.update(self.current_global_fields)
         final_message.update(message)
         final_message[Constants.TIMESTAMP_FIELD] = final_message.get(Constants.TIMESTAMP_FIELD, time())
         final_message.pop(Constants.LOG_LEVEL, None)
@@ -1112,18 +1043,15 @@ class LoggingContextWorkItem(thread._WorkItem):  # type: ignore[attr-defined]
     def __init__(self, future, fn, args, kwargs):
         super().__init__(future, fn, args, kwargs)
         self.global_fields = logging_context.current_global_fields
-        current_action = logging_context.current()
-        self.internal_id = logging_context.current_internal_id() if current_action else None
+
+        internal_id = self.global_fields.get(Constants.LOG_CORRELATION_ID_FIELD, logging_context.current_internal_id())
+        if internal_id:
+            self.global_fields[Constants.LOG_CORRELATION_ID_FIELD] = internal_id
 
     def run(self):
         temp_globals = _Globals(self.global_fields)
-        action = LogActionContextManager(internal_id=self.internal_id)
-
         logging_context.add_temporary_globals(temp_globals)
-        logging_context.push(action)
-
         try:
             super().run()
         finally:
-            logging_context.pop(action)
             logging_context.pop_temporary_globals(temp_globals)

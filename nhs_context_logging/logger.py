@@ -674,7 +674,7 @@ class LogActionContextManager(threading.local):
 class _Globals:
     __slots__ = ["globals"]
 
-    globals: Dict[str, Any]  # noqa: A003
+    globals: Dict[str, Any]
 
     def __init__(self, fields: Dict[str, Any]):
         self.globals = fields
@@ -847,9 +847,9 @@ class _LoggingContext(threading.local):
     def __init__(self):
         self._on_init: Optional[Callable[[], None]] = None
         self._storage: Optional[Union[_TaskIsolatedContextStorage, _ThreadLocalContextStorage]] = None
-        self._storage_factory: Callable[
-            [], Union[_TaskIsolatedContextStorage, _ThreadLocalContextStorage]
-        ] = _ThreadLocalContextStorage
+        self._storage_factory: Callable[[], Union[_TaskIsolatedContextStorage, _ThreadLocalContextStorage]] = (
+            _ThreadLocalContextStorage
+        )
 
     configured = False
 

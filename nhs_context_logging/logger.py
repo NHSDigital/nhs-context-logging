@@ -117,6 +117,7 @@ class _Logger:
         redact_fields: Optional[Set[str]] = None,
         internal_id_factory: Callable[[], str] = uuid4_hex_string,
         config_kwargs: Optional[dict] = None,
+        force_reinit: Optional[bool] = None,
         **kwargs,
     ):
         """
@@ -130,11 +131,12 @@ class _Logger:
             redact_fields: override set of field names to override
             internal_id_factory: optional callable to configure the internal_id factory
             config_kwargs: optional configuration parameters, as described in LogConfig
+            force_reinit: force re-setup of the logger ( ignore _is_setup )
             **kwargs: other args added as global log items
         Returns:
 
         """
-        if self._is_setup:
+        if self._is_setup and not force_reinit:
             return
 
         if is_async:

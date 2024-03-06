@@ -90,8 +90,13 @@ def test_setup_override_internal_id_factory(log_capture):
     def return_of_the_bob() -> str:
         return "bob"
 
-    app_logger._is_setup = False
-    app_logger.setup("testing", internal_id_factory=return_of_the_bob)
+    service = uuid4().hex
+    app_logger.setup(service, force_reinit=True)
+    assert app_logger.service_name == service
+
+    service = uuid4().hex
+    app_logger.setup(service, internal_id_factory=return_of_the_bob, force_reinit=True)
+    assert app_logger.service_name == service
 
     @log_action()
     def do_a_thing():

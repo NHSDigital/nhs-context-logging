@@ -76,7 +76,7 @@ target-version = "py38"
 
 [tool.black]
 line-length = 120
-target-version = ['py38', 'py39', 'py310', 'py311']
+target-version = ['py38', 'py39', 'py310', 'py311', 'py312']
 include = '\.pyi?$'
 #extend-exclude = '''
 #/(
@@ -137,7 +137,7 @@ check_untyped_defs = true
 [tool.tox]
 legacy_tox_ini = """
 [tox]
-envlist = py38,py39,py310,py311
+envlist = py38,py39,py310,py311,py312
 
 [gh-actions]
 python =
@@ -145,6 +145,7 @@ python =
     3.9: py39
     3.10: py310
     3.11: py311
+    3.12: py312
 
 [testenv]
 deps =

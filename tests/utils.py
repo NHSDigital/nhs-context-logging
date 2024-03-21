@@ -1,5 +1,6 @@
 import asyncio
 import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from typing import (
     Any,
@@ -9,6 +10,7 @@ from typing import (
     Optional,
     Sequence,
     Tuple,
+    Type,
     TypeVar,
     cast,
 )
@@ -72,6 +74,7 @@ def concurrent_tasks(
     raise_if_ex: bool = True,
     with_results=True,
     max_workers: Optional[int] = None,
+    tpe_type: Type[ThreadPoolExecutor] = LoggingThreadPoolExecutor,
 ) -> Mapping[str, Any]:
     """
     Execute a collection of tasks in parallel, wait for all tasks to complete and return the
@@ -92,7 +95,7 @@ def concurrent_tasks(
          task or the exception raised by the task; or, if with_results is set to False, True
          for tasks that ran successfully and False for tasks which raised exceptions
     """
-    with LoggingThreadPoolExecutor(max_workers=max_workers) as executor:
+    with tpe_type(max_workers=max_workers) as executor:
         task_ids = {}
         futures = []
         for task_id, func, args in parallels:

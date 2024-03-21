@@ -11,7 +11,7 @@ from asyncio import Task
 from concurrent.futures import ThreadPoolExecutor, _base, thread
 from concurrent.futures.thread import BrokenThreadPool
 from dataclasses import asdict, dataclass
-from functools import wraps
+from functools import partial, wraps
 from logging.handlers import RotatingFileHandler
 from time import time
 from types import FrameType, TracebackType
@@ -117,6 +117,7 @@ class _Logger:
         redact_fields: Optional[Set[str]] = None,
         internal_id_factory: Callable[[], str] = uuid4_hex_string,
         config_kwargs: Optional[dict] = None,
+        on_init: Optional[Callable[[], None]] = None,
         force_reinit: Optional[bool] = None,
         **kwargs,
     ):
@@ -131,6 +132,7 @@ class _Logger:
             redact_fields: override set of field names to override
             internal_id_factory: optional callable to configure the internal_id factory
             config_kwargs: optional configuration parameters, as described in LogConfig
+            on_init: init function called as context is initialised, defaults to setup_logging_tpe for async
             force_reinit: force re-setup of the logger ( ignore _is_setup )
             **kwargs: other args added as global log items
         Returns:
@@ -139,8 +141,13 @@ class _Logger:
         if self._is_setup and not force_reinit:
             return
 
+        logging_context._needs_init = True
+        logging_context._on_init = on_init
+
         if is_async:
             logging_context.setup_async()
+            if not on_init:
+                logging_context._on_init = setup_logging_tpe
 
         if redact_fields is None:
             redact_fields = _DEFAULT_REDACTIONS
@@ -833,21 +840,22 @@ class _TaskIsolatedContextStorage:
 _app_globals: Dict[str, Any] = {}
 
 
-def setup_logging_tpe():
+def set_async_tpe(tpe_type: Type[ThreadPoolExecutor]):
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return
 
-    if isinstance(loop._default_executor, LoggingThreadPoolExecutor):  # type: ignore[attr-defined]
+    if isinstance(loop._default_executor, tpe_type):  # type: ignore[attr-defined]
         return
-    logging_tpe = LoggingThreadPoolExecutor()
-    loop.set_default_executor(logging_tpe)
+    tpe = tpe_type()
+    loop.set_default_executor(tpe)
 
 
 class _LoggingContext(threading.local):
     def __init__(self):
         self._on_init: Optional[Callable[[], None]] = None
+        self._needs_init = True
         self._storage: Optional[Union[_TaskIsolatedContextStorage, _ThreadLocalContextStorage]] = None
         self._storage_factory: Callable[[], Union[_TaskIsolatedContextStorage, _ThreadLocalContextStorage]] = (
             _ThreadLocalContextStorage
@@ -860,15 +868,20 @@ class _LoggingContext(threading.local):
         attributes["_storage"] = None
         return attributes
 
+    def _maybe_init(self):
+        if not self._on_init or not self._needs_init:
+            return
+        self._on_init()
+        self._needs_init = False
+
     @property
     def app_globals(self) -> Dict[str, Any]:
         return _app_globals
 
     @property
     def storage(self):
+        self._maybe_init()
         if self._storage is None:
-            if self._on_init:
-                self._on_init()
             self._storage = self._storage_factory()
 
         return self._storage
@@ -968,7 +981,6 @@ class _LoggingContext(threading.local):
 
     def setup_async(self):
         self.async_context_storage()
-        self._on_init = setup_logging_tpe
 
     def async_context_storage(self):
         self._storage = None
@@ -1009,33 +1021,6 @@ def safe_str(obj: AnyStr) -> bytes:
     return obj.encode("utf-8", errors="backslashreplace")
 
 
-class LoggingThreadPoolExecutor(ThreadPoolExecutor):
-    def submit(self, fn, /, *args, **kwargs) -> _base.Future:  # type: ignore[override]
-        def _inner() -> _base.Future:
-            if self._broken:  # type: ignore[attr-defined]
-                raise BrokenThreadPool(self._broken)  # type: ignore[attr-defined]
-
-            if self._shutdown:  # type: ignore[attr-defined]
-                raise RuntimeError("cannot schedule new futures after shutdown")
-
-            if thread._shutdown:  # type: ignore[attr-defined]
-                raise RuntimeError("cannot schedule new futures after interpreter shutdown")
-
-            future: _base.Future = _base.Future()
-            work_item = LoggingContextWorkItem(future, fn, args, kwargs)
-
-            self._work_queue.put(work_item)
-            ThreadPoolExecutor._adjust_thread_count(self)  # type: ignore[misc]
-            return future
-
-        if hasattr(thread, "_global_shutdown_lock"):
-            with self._shutdown_lock, thread._global_shutdown_lock:  # type: ignore[attr-defined]
-                return _inner()
-
-        with self._shutdown_lock:
-            return _inner()
-
-
 class LoggingContextWorkItem(thread._WorkItem):  # type: ignore[attr-defined]
     """
     Capture the global fields and internal id in the constructor (from the thread that is going to spawn the worker
@@ -1057,3 +1042,49 @@ class LoggingContextWorkItem(thread._WorkItem):  # type: ignore[attr-defined]
             super().run()
         finally:
             logging_context.pop_temporary_globals(temp_globals)
+
+
+class WorkItemThreadPoolExecutor(ThreadPoolExecutor):
+
+    def __init__(
+        self,
+        max_workers=None,
+        thread_name_prefix: str = "",
+        initializer=None,
+        initargs=(),
+        work_item_type: Type[thread._WorkItem] = LoggingContextWorkItem,
+    ):
+        self._work_item_type = work_item_type
+        super().__init__(
+            max_workers=max_workers, thread_name_prefix=thread_name_prefix, initializer=initializer, initargs=initargs
+        )
+
+    def submit(self, fn, /, *args, **kwargs) -> _base.Future:  # type: ignore[override]
+        def _inner() -> _base.Future:
+            if self._broken:  # type: ignore[attr-defined]
+                raise BrokenThreadPool(self._broken)  # type: ignore[attr-defined]
+
+            if self._shutdown:  # type: ignore[attr-defined]
+                raise RuntimeError("cannot schedule new futures after shutdown")
+
+            if thread._shutdown:  # type: ignore[attr-defined]
+                raise RuntimeError("cannot schedule new futures after interpreter shutdown")
+
+            future: _base.Future = _base.Future()
+            work_item = self._work_item_type(future, fn, args, kwargs)
+
+            self._work_queue.put(work_item)
+            ThreadPoolExecutor._adjust_thread_count(self)  # type: ignore[misc]
+            return future
+
+        if hasattr(thread, "_global_shutdown_lock"):
+            with self._shutdown_lock, thread._global_shutdown_lock:  # type: ignore[attr-defined]
+                return _inner()
+
+        with self._shutdown_lock:
+            return _inner()
+
+
+LoggingThreadPoolExecutor = WorkItemThreadPoolExecutor
+
+setup_logging_tpe = partial(set_async_tpe, tpe_type=LoggingThreadPoolExecutor)

@@ -5,10 +5,11 @@ import inspect
 import json
 import logging
 import time
+from concurrent.futures import thread
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from functools import wraps
+from functools import partial, wraps
 from typing import (
     Any,
     Callable,
@@ -37,7 +38,7 @@ from nhs_context_logging.formatters import (
     KeyValueFormatter,
     StructuredFormatter,
 )
-from nhs_context_logging.logger import ActionNotInStack
+from nhs_context_logging.logger import ActionNotInStack, LoggingThreadPoolExecutor, set_async_tpe
 from tests.utils import concurrent_tasks, create_task, run_in_executor
 
 
@@ -663,7 +664,8 @@ async def test_end_action_when_action_already_popped_with_exception(
 
 
 async def test_async_logging_context_run_in_executor(log_capture: Tuple[List[dict], List[dict]]):
-    logging_context.setup_async()
+
+    app_logger.setup("pytest", is_async=True, force_reinit=True)
     global_id = uuid4().hex
 
     std_out, std_err = log_capture
@@ -702,6 +704,64 @@ async def test_async_logging_context_run_in_executor(log_capture: Tuple[List[dic
     my_io_global_id = {line["global_id"] for line in std_out if line["action"] == "my_io"}
     assert len(my_io_global_id) == 1
     assert my_io_global_id == {global_id}
+
+
+class NoLoggingContextWorkItem(thread._WorkItem):  # type: ignore[attr-defined]
+    pass
+
+
+class CustomExecutor(LoggingThreadPoolExecutor):
+    def __init__(self, max_workers=None, thread_name_prefix: str = "", initializer=None, initargs=()):
+        super().__init__(
+            max_workers=max_workers,
+            thread_name_prefix=thread_name_prefix,
+            initializer=initializer,
+            initargs=initargs,
+            work_item_type=NoLoggingContextWorkItem,
+        )
+
+
+setup_no_context_tpe = partial(set_async_tpe, tpe_type=CustomExecutor)
+
+
+async def test_async_logging_context_run_in_executor_override_init(log_capture: Tuple[List[dict], List[dict]]):
+
+    app_logger.setup("pytest", is_async=True, force_reinit=True, on_init=setup_no_context_tpe)
+    global_id = uuid4().hex
+
+    std_out, std_err = log_capture
+
+    @log_action()
+    async def my_coro2(task_id: str):
+        with temporary_global_fields(global_id=global_id):
+            print(f"{datetime.now()} -starting task {task_id}")
+            res = await asyncio.gather(
+                *[
+                    run_in_executor(my_io, f"{task_id}-task1"),
+                    run_in_executor(my_io, f"{task_id}-task2", wait=0.5),
+                    run_in_executor(my_io, f"{task_id}-task3", wait=0.25),
+                    run_in_executor(my_io, f"{task_id}-task4", wait=0.33),
+                ]
+            )
+            print(f"{datetime.now()} -ending task {task_id}")
+            action = logging_context.current()
+        return task_id, action.internal_id, res
+
+    @log_action()
+    def my_io(task_id: str, wait: float = 1):
+        print(f"{datetime.now()} - starting task {task_id}")
+        time.sleep(wait)
+        print(f"{datetime.now()} - ending task {task_id}")
+        return task_id
+
+    async with log_action("wrapper"):
+        await asyncio.gather(*[my_coro2("2task1"), my_coro2("2task2"), my_coro2("2task3"), my_coro2("2task4")])
+
+    assert len(std_err) == 0
+    assert len(std_out) == 21
+
+    internal_ids = {line["internal_id"] for line in (log_capture[0] + log_capture[1])}
+    assert len(internal_ids) > 10, internal_ids
 
 
 def test_key_value_formatter_drop_log_info():
@@ -1239,7 +1299,7 @@ def test_expected_errors_in_both(log_capture: Tuple[List[dict], List[dict]]):
 
 
 async def test_expected_errors_run_in_executor(log_capture: Tuple[List[dict], List[dict]]):
-    logging_context.setup_async()
+    app_logger.setup("pytest", is_async=True, force_reinit=True)
 
     std_out, std_err = log_capture
 
@@ -1333,7 +1393,7 @@ def test_expected_errors_complex_exception(log_capture: Tuple[List[dict], List[d
 
 
 async def test_async_sync_concurrent_tasks_transfer(log_capture: Tuple[List[dict], List[dict]]):
-    logging_context.setup_async()
+    app_logger.setup("pytest", is_async=True, force_reinit=True)
 
     @log_action()
     def my_task():
@@ -1367,7 +1427,7 @@ async def test_async_sync_concurrent_tasks_transfer(log_capture: Tuple[List[dict
 
 
 async def test_async_to_run_in_executor_sync(log_capture: Tuple[List[dict], List[dict]]):
-    logging_context.setup_async()
+    app_logger.setup("pytest", is_async=True, force_reinit=True)
 
     global_id = uuid4().hex
 
